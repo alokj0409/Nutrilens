@@ -113,6 +113,10 @@ export default function ScanScreen({
           getIndianDishCatalogue(),
         ]);
 
+        if (mealAnalysis.recognition.status === "not_a_meal") {
+          throw new Error(mealAnalysis.recognition.message);
+        }
+
         if (dishes.length === 0) {
           throw new Error("The backend dish catalogue is empty. Add supported dishes before scanning a meal.");
         }
