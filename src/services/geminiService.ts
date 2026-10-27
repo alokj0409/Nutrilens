@@ -169,9 +169,11 @@ export async function analyzePackagedFoodImage(
   const client = getClient();
 
 
-  const prompt = `You are a food nutrition analyst. Analyze this packaged food product label image.
-${ocrText ? `\nOCR text extracted from the label:\n"""${ocrText}"""\n` : ""}
-Be as accurate as possible. If you can read values from the image, use those. If some values are unclear, make your best estimate based on the product type. If the image is completely unreadable or not a food label, return "Unknown Product" and 0 for all numerical values.`;
+  const prompt = `You are a strict food packaging and nutrition label analyst.
+First, verify whether this image actually depicts a packaged food item, food container, or nutrition label table.
+If the image shows a person, selfie, human face, electronic screen, phone screenshot, room, animal, landscape, document, or non-food item, you MUST set "isPackagedFoodOrLabel" to false.
+Otherwise, set "isPackagedFoodOrLabel" to true and extract the nutrition values accurately from the packaging or table.
+${ocrText ? `\nOCR text extracted from the label:\n"""${ocrText}"""\n` : ""}`;
 
   const model = client.getGenerativeModel({ 
     model: GEMINI_MODEL,
@@ -180,6 +182,8 @@ Be as accurate as possible. If you can read values from the image, use those. If
       responseSchema: {
         type: SchemaType.OBJECT,
         properties: {
+          isPackagedFoodOrLabel: { type: SchemaType.BOOLEAN },
+          rejectionReason: { type: SchemaType.STRING },
           name: { type: SchemaType.STRING },
           brand: { type: SchemaType.STRING },
           servingSize: { type: SchemaType.STRING },
@@ -193,7 +197,7 @@ Be as accurate as possible. If you can read values from the image, use those. If
           protein: { type: SchemaType.NUMBER },
           per100g: { type: SchemaType.BOOLEAN },
         },
-        required: ["name", "brand", "servingSize", "ingredients", "allergens", "calories", "saturatedFat", "sugars", "sodium", "fiber", "protein", "per100g"]
+        required: ["isPackagedFoodOrLabel", "name", "brand", "servingSize", "ingredients", "allergens", "calories", "saturatedFat", "sugars", "sodium", "fiber", "protein", "per100g"]
       }
     }
   });
@@ -210,6 +214,12 @@ Be as accurate as possible. If you can read values from the image, use those. If
     parsed = JSON.parse(jsonStr);
   } catch {
     throw new Error("Failed to parse AI response. Please try scanning again.");
+  }
+
+  if (parsed.isPackagedFoodOrLabel === false || (parsed.name === "Unknown Product" && (!parsed.calories || parsed.calories === 0))) {
+    throw new Error(
+      "Not a packaged food product. Please point the camera at a packaged food item or nutrition label."
+    );
   }
 
   const nutritionValues = readRequiredNutrition(parsed);
