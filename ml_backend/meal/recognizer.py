@@ -204,6 +204,8 @@ class OpenClipMealRecognizer:
             "A screenshot of text or a user interface on a phone screen.",
         ),
         "unrelated_object_or_scene": (
+            "A selfie or portrait of a human face or person, not food.",
+            "A photo of a person looking at the camera.",
             "A photo of household objects arranged on a table, not a meal.",
             "A photo of an animal or pet.",
             "A photo of a landscape, building, or outdoor scene.",
@@ -286,22 +288,27 @@ class OpenClipMealRecognizer:
             image, self.NOT_MEAL_PROMPTS
         )
         meal_score = domain_scores["indian_meal"]
-        non_meal_score = max(
-            score
-            for group, score in domain_scores.items()
-            if group != "indian_meal"
+        top_non_meal_group = max(
+            (group for group in domain_scores if group != "indian_meal"),
+            key=lambda g: domain_scores[g]
         )
+        non_meal_score = domain_scores[top_non_meal_group]
+
         if non_meal_score >= meal_score + self.PACKAGED_IMAGE_MARGIN:
+            if top_non_meal_group == "packaged_product":
+                msg = "This image looks like packaged food. Switch to Package mode to scan the nutrition label."
+            elif top_non_meal_group == "document_or_label":
+                msg = "Not an Indian dish. This looks like text, a document, or a nutrition label."
+            else:
+                msg = "Not an Indian dish. Please point the camera at an Indian meal served on a plate."
+
             return RecognitionAttempt(
                 status="not_a_meal",
                 model_loaded=True,
                 model_name=self.model_name,
                 confidence=None,
                 predictions=(),
-                message=(
-                    "This image looks more like packaged food than an Indian meal. "
-                    "Switch to Package mode or scan a meal served on a plate."
-                ),
+                message=msg,
             )
         segmentation = segmenter.predict(image)
         if not segmentation.regions:
