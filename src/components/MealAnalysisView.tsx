@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
   AnalyzedProduct,
+  ChatMessage,
   IndianDishOption,
   IndianMealAnalysis,
   MealItemInput,
@@ -12,7 +13,8 @@ import {
   mealAnalysisToProduct,
   recalculateIndianMeal,
 } from "../services/mealService";
-import { updateScannedProduct } from "../services/storageService";
+import { chatAboutFood } from "../services/geminiService";
+import { updateScannedProduct, getUserProfile, getApiKey } from "../services/storageService";
 import MealConfirmationPanel from "./MealConfirmationPanel";
 
 const cardStyle = {
@@ -72,6 +74,30 @@ export default function MealAnalysisView({
   onProductUpdate?: (product: AnalyzedProduct) => void;
 }) {
   const [analysis, setAnalysis] = useState(product.mealAnalysis);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
+  const handleChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const query = chatInput.trim();
+    setChatInput("");
+    setChatMessages((prev) => [...prev, { role: "user", content: query }]);
+    setChatLoading(true);
+
+    try {
+      const profile = getUserProfile();
+      const response = await chatAboutFood(product, chatMessages, query, profile);
+      setChatMessages((prev) => [...prev, { role: "assistant", content: response }]);
+    } catch {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Sorry, I could not process your question. Make sure your Gemini API key is configured in Profile." },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
   const [editing, setEditing] = useState(false);
   const [dishes, setDishes] = useState<IndianDishOption[]>([]);
   const [catalogueLoading, setCatalogueLoading] = useState(false);
@@ -316,7 +342,7 @@ export default function MealAnalysisView({
       ) : null}
 
       {analysis.limitations.length > 0 ? (
-        <section aria-labelledby="meal-limitations-heading" style={{ margin: "0 20px", borderRadius: 16, border: "1px solid #F3D49A", background: "#FFF4E0", padding: 13 }}>
+        <section aria-labelledby="meal-limitations-heading" style={{ margin: "0 20px 14px", borderRadius: 16, border: "1px solid #F3D49A", background: "#FFF4E0", padding: 13 }}>
           <h2 id="meal-limitations-heading" style={{ margin: 0, color: "#8A5200", fontSize: 11, fontWeight: 800 }}>
             About this estimate
           </h2>
@@ -327,6 +353,86 @@ export default function MealAnalysisView({
           </ul>
         </section>
       ) : null}
+
+      {/* Interactive AI Chatbot for Indian Meal */}
+      <div style={{ margin: "0 20px 20px", ...cardStyle, padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 18 }}>🤖</span>
+          <div>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: 800, color: "#0F1720" }}>Ask NutriLens AI</p>
+            <p style={{ margin: 0, fontSize: 10, color: "#7B8490" }}>Personalized insights about this Indian meal</p>
+          </div>
+        </div>
+
+        {chatMessages.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12, maxHeight: 220, overflowY: "auto" }}>
+            {chatMessages.map((msg, idx) => (
+              <div
+                key={idx}
+                style={{
+                  padding: "9px 13px",
+                  borderRadius: 14,
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  background: msg.role === "user" ? "#1B7A43" : "#F7F9FA",
+                  color: msg.role === "user" ? "white" : "#0F1720",
+                  alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                  maxWidth: "85%",
+                }}
+              >
+                {msg.content}
+              </div>
+            ))}
+            {chatLoading && (
+              <div style={{ padding: "8px 12px", borderRadius: 14, background: "#F7F9FA", alignSelf: "flex-start", fontSize: 11, color: "#7B8490" }}>
+                Thinking...
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleChat()}
+            placeholder="e.g. Is this meal high in carbs?"
+            style={{
+              flex: 1,
+              padding: "10px 14px",
+              borderRadius: 14,
+              border: "1px solid #E8ECEF",
+              fontSize: 12,
+              color: "#0F1720",
+              outline: "none",
+              background: "#F7F9FA",
+            }}
+          />
+          <button
+            onClick={handleChat}
+            disabled={!chatInput.trim() || chatLoading}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 14,
+              border: "none",
+              background: chatInput.trim() && !chatLoading ? "#1B7A43" : "#E8ECEF",
+              color: chatInput.trim() && !chatLoading ? "white" : "#A0A8B0",
+              cursor: chatInput.trim() && !chatLoading ? "pointer" : "default",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
