@@ -2,16 +2,39 @@ export async function startCamera(
   videoElement: HTMLVideoElement,
   facingMode: "environment" | "user" = "environment"
 ): Promise<MediaStream> {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode,
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    },
-    audio: false,
-  });
+  if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      "Camera is not supported or context is insecure. Access via http://localhost:8443 or HTTPS."
+    );
+  }
+
+  let stream: MediaStream;
+  try {
+    // Attempt with requested ideal facingMode
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    });
+  } catch {
+    // Fallback: try any video source without strict facing constraints (essential on laptop/desktop webcams)
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false,
+    });
+  }
+
   videoElement.srcObject = stream;
-  await videoElement.play();
+  videoElement.setAttribute("playsinline", "true");
+  videoElement.muted = true;
+  try {
+    await videoElement.play();
+  } catch (err) {
+    console.warn("Video element play warning:", err);
+  }
   return stream;
 }
 

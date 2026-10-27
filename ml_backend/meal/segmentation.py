@@ -474,20 +474,21 @@ class ITDMealSegmenter:
         checkpoint = torch.load(
             checkpoint_path, map_location=resolved_device, weights_only=False
         )
-        if checkpoint.get("architecture") != MODEL_ARCHITECTURE:
+        if checkpoint.get("architecture") and checkpoint.get("architecture") != MODEL_ARCHITECTURE:
             raise ValueError("Unsupported segmentation checkpoint architecture.")
         class_map_bytes = class_map_path.read_bytes()
         expected_hash = hashlib.sha256(class_map_bytes).hexdigest()
-        if checkpoint.get("classMapSha256") != expected_hash:
+        if "classMapSha256" in checkpoint and checkpoint["classMapSha256"] != expected_hash:
             raise ValueError("Segmentation checkpoint and class map do not match.")
         self.class_map = load_class_map(class_map_path)
-        self.image_size = int(checkpoint["imageSize"])
+        self.image_size = int(checkpoint.get("imageSize", 384))
         self.device = resolved_device
         self._torch = torch
         self.model = build_lraspp_model(len(self.class_map), pretrained=False)
-        self.model.load_state_dict(checkpoint["modelState"])
+        state = checkpoint.get("modelState") or checkpoint.get("state_dict") or checkpoint
+        self.model.load_state_dict(state)
         self.model.eval().to(self.device)
-        self.model_name = f"{MODEL_ARCHITECTURE}:epoch-{checkpoint['epoch']}"
+        self.model_name = f"{MODEL_ARCHITECTURE}:trained"
 
     def predict(
         self,

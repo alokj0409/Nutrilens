@@ -42,6 +42,8 @@ export default function ScanScreen({
   const [statusMsg, setStatusMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [pendingMeal, setPendingMeal] = useState<IndianMealAnalysis | null>(null);
   const [dishCatalogue, setDishCatalogue] = useState<IndianDishOption[]>([]);
@@ -49,15 +51,29 @@ export default function ScanScreen({
   const [mealConfirmationError, setMealConfirmationError] = useState("");
   const [mealConfirmationLoading, setMealConfirmationLoading] = useState(false);
 
-  const initCamera = useCallback(async () => {
+  const initCamera = useCallback(async (facing: "environment" | "user" = facingMode) => {
     if (!videoRef.current) return;
+    setCameraError(null);
     try {
-      streamRef.current = await startCamera(videoRef.current);
+      if (streamRef.current) {
+        stopCamera(streamRef.current);
+        streamRef.current = null;
+      }
+      streamRef.current = await startCamera(videoRef.current, facing);
       setCameraActive(true);
-    } catch {
+      setCameraError(null);
+    } catch (err: unknown) {
       setCameraActive(false);
+      const msg = err instanceof Error ? err.message : "Unable to access camera.";
+      setCameraError(msg);
     }
-  }, []);
+  }, [facingMode]);
+
+  const toggleFacingMode = async () => {
+    const nextFacing = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(nextFacing);
+    await initCamera(nextFacing);
+  };
 
   useEffect(() => {
     if (phase === "idle" && !capturedImage && !streamRef.current) {
@@ -82,32 +98,6 @@ export default function ScanScreen({
     }, 600);
   };
 
-  const requestMealConfirmation = async (
-    analysis: IndianMealAnalysis,
-    imageDataUrl: string,
-  ) => {
-    setPendingMeal(analysis);
-    setStatusMsg("Loading supported Indian dishes...");
-    const dishes = await getIndianDishCatalogue();
-    if (dishes.length === 0) {
-      throw new Error("The backend dish catalogue is empty. Add supported dishes before scanning a meal.");
-    }
-    setDishCatalogue(dishes);
-
-    let suggestions: MealItemInput[] = [];
-    if (getApiKey()) {
-      setStatusMsg("Identifying likely dishes for you to confirm...");
-      try {
-        suggestions = await suggestIndianMealItems(imageDataUrl, dishes);
-      } catch {
-        suggestions = [];
-      }
-    }
-    setMealSuggestedItems(suggestions);
-    setPhase("confirming");
-    setStatusMsg("Confirm the dishes and portions visible in the photo.");
-  };
-
   const processImage = async (imageDataUrl: string) => {
     setCapturedImage(imageDataUrl);
     const apiKey = getApiKey();
@@ -116,19 +106,38 @@ export default function ScanScreen({
     try {
       if (mode === "food") {
         setPhase("analyzing");
-        setStatusMsg("Checking the meal with the Indian dish pipeline...");
-        const mealAnalysis = await analyzeIndianMeal(imageDataUrl);
+        setStatusMsg("Analyzing meal and identifying dishes...");
 
-        if (
-          mealAnalysis.requiresUserConfirmation ||
-          mealAnalysis.requiresPortionConfirmation ||
-          mealAnalysis.items.length === 0
-        ) {
-          await requestMealConfirmation(mealAnalysis, imageDataUrl);
-          return;
+        const [mealAnalysis, dishes] = await Promise.all([
+          analyzeIndianMeal(imageDataUrl),
+          getIndianDishCatalogue(),
+        ]);
+
+        if (dishes.length === 0) {
+          throw new Error("The backend dish catalogue is empty. Add supported dishes before scanning a meal.");
+        }
+        setDishCatalogue(dishes);
+        setPendingMeal(mealAnalysis);
+
+        let suggestions: MealItemInput[] = (mealAnalysis.items || []).map((item) => ({
+          dishId: item.dishId,
+          portionGrams: item.portion?.selectedGrams,
+          portionBasis: item.portion?.basis === "user_measured_weight" ? ("measured" as const) : ("estimated" as const),
+        }));
+
+        if (suggestions.length === 0 && apiKey) {
+          setStatusMsg("Identifying likely dishes with AI...");
+          try {
+            suggestions = await suggestIndianMealItems(imageDataUrl, dishes);
+          } catch (err) {
+            console.error("Gemini meal suggestion error:", err);
+            suggestions = [];
+          }
         }
 
-        finishAnalysis(mealAnalysisToProduct(imageDataUrl, mealAnalysis));
+        setMealSuggestedItems(suggestions);
+        setPhase("confirming");
+        setStatusMsg("Confirm the dishes and portions visible in the photo.");
         return;
       }
 
@@ -316,6 +325,7 @@ export default function ScanScreen({
     setPhase("idle");
     setStatusMsg("");
     setErrorMsg("");
+    setCameraError(null);
   };
 
   const handleRetry = () => {
@@ -360,13 +370,52 @@ export default function ScanScreen({
               playsInline
               muted
               className="w-full h-full object-cover"
-              style={{ opacity: cameraActive ? 0.7 : 0, transform: "scaleX(-1)" }}
+              style={{
+                opacity: cameraActive ? 0.7 : 0,
+                transform: facingMode === "user" ? "scaleX(-1)" : "none",
+              }}
             />
             {!cameraActive && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-center px-8">
-                  <p className="text-white/60 text-sm mb-3">Camera initializing...</p>
-                  <p className="text-white/40 text-xs">Or use the gallery button below</p>
+              <div className="absolute inset-0 flex items-center justify-center bg-black/60 p-6 z-10">
+                <div className="text-center px-4 max-w-xs">
+                  {cameraError ? (
+                    <>
+                      <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-red-500/20 flex items-center justify-center text-red-400 text-xl font-bold">
+                        📷
+                      </div>
+                      <p className="text-white text-sm font-semibold mb-1">Camera Not Available</p>
+                      <p className="text-white/70 text-xs mb-4 leading-relaxed">{cameraError}</p>
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void initCamera(facingMode)}
+                          className="px-4 py-2 bg-[#1B7A43] hover:bg-[#156034] text-white rounded-full text-xs font-semibold shadow transition-all"
+                        >
+                          🔄 Retry Camera
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void toggleFacingMode()}
+                          className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-medium transition-all"
+                        >
+                          🔄 Switch Front/Back Camera
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleGallery}
+                          className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-medium transition-all"
+                        >
+                          🖼️ Choose Image from Device
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-8 h-8 border-2 border-[#1B7A43] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                      <p className="text-white/80 text-sm font-medium mb-1">Starting camera...</p>
+                      <p className="text-white/40 text-xs">Allow camera permission if prompted</p>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -408,7 +457,12 @@ export default function ScanScreen({
             ))}
           </div>
 
-          <button className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+          <button
+            type="button"
+            onClick={toggleFacingMode}
+            title={`Switch camera (current: ${facingMode})`}
+            className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center hover:bg-black/60 transition-colors"
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.071 4.929A10 10 0 104.93 19.07"/>

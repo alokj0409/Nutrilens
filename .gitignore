@@ -29,3 +29,13 @@ ml_backend/models/__pycache__/
 # Downloaded ML datasets, checkpoints, and generated embeddings
 /.ml_artifacts/
 
+# Large local datasets and raw archives
+ITD/
+ITD.zip
+nutrilens_itd_artifacts.tar.gz
+
+# Local assignment and evaluation reports
+ASSIGNMENT_SUBMISSION.md
+ML_LAB_EVALUATION_GUIDE.md
+POSTER_PRESENTATION.html
+build_interviews.py

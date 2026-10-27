@@ -10,7 +10,19 @@ const KEYS = {
 // --- API Key ---
 
 export function getApiKey(): string | null {
-  return localStorage.getItem(KEYS.API_KEY);
+  const fromStorage = typeof localStorage !== "undefined" ? localStorage.getItem(KEYS.API_KEY) : null;
+  if (fromStorage && fromStorage.trim().length > 0) return fromStorage.trim();
+
+  const fromEnv = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
+  if (fromEnv && fromEnv.length > 0) {
+    try {
+      localStorage.setItem(KEYS.API_KEY, fromEnv);
+    } catch {
+      // ignore storage access errors
+    }
+    return fromEnv;
+  }
+  return null;
 }
 
 export function setApiKey(key: string): void {

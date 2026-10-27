@@ -13,6 +13,10 @@ import type {
 import { buildNutrients, calculateNutriScore, getGradeColors } from "./nutritionScoringService";
 import { getApiKey } from "./storageService";
 
+export const GEMINI_MODEL =
+  (import.meta.env.VITE_GEMINI_MODEL as string | undefined)?.trim() ||
+  "gemini-3.8-flash";
+
 function getClient(): GoogleGenerativeAI {
   const key = getApiKey();
   if (!key) throw new Error("Gemini API key not configured. Please add it in Profile → Settings.");
@@ -25,6 +29,39 @@ function imageDataUrlToGenerativePart(dataUrl: string) {
   return {
     inlineData: { data: base64Data ?? "", mimeType },
   };
+}
+
+async function compressImageForAI(dataUrl: string, maxDim = 800, quality = 0.8): Promise<string> {
+  if (typeof document === "undefined" || !dataUrl.startsWith("data:image")) return dataUrl;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width <= maxDim && height <= maxDim) {
+        resolve(dataUrl);
+        return;
+      }
+      if (width > height) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 function readRequiredNutrition(parsed: Record<string, unknown>) {
@@ -62,28 +99,37 @@ export async function suggestIndianMealItems(
   dishes: IndianDishOption[],
 ): Promise<MealItemInput[]> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
-  const allowed = dishes.map((dish) => ({
+  const model = client.getGenerativeModel({
+    model: GEMINI_MODEL,
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0.1,
+    },
+  });
+
+  const compactCatalogue = dishes.map((dish) => ({
     id: dish.id,
     name: dish.name,
-    aliases: dish.aliases,
+    aliases: dish.aliases.slice(0, 3),
   }));
 
-  const prompt = `Identify only the visible foods in this Indian meal image.
-Choose exclusively from this supported catalogue:
-${JSON.stringify(allowed)}
+  const prompt = `You are an expert Indian meal classifier. Look at this food/thali photo and identify all visible dishes, curries, lentils, rice, flatbreads, sides, and fruits.
+Match each visible food item to the most appropriate ID from this supported catalogue:
+${JSON.stringify(compactCatalogue)}
 
-Return JSON only in this exact shape:
-{"dishIds":["exact_catalogue_id"]}
+Return a JSON object in this exact shape:
+{"dishIds": ["matched_catalogue_id_1", "matched_catalogue_id_2"]}
 
 Rules:
-- Return at most 10 unique IDs.
-- Do not return nutrients, weights, ingredients, or foods outside the catalogue.
-- Omit uncertain items. The user will verify every suggestion.`;
+- Identify all food items visible on the plate or tray.
+- Only output IDs that exist in the catalogue above.
+- If a dish looks like a variant (e.g. any dal, curry, bread, salad, or fruit), select the closest matching catalogue ID.
+- Up to 8 unique IDs.`;
 
+  const compressed = await compressImageForAI(imageDataUrl, 800, 0.75);
   const result = await model.generateContent([
     prompt,
-    imageDataUrlToGenerativePart(imageDataUrl),
+    imageDataUrlToGenerativePart(compressed),
   ]);
   const responseText = result.response.text();
 
@@ -95,7 +141,7 @@ Rules:
     const byId = new Map(dishes.map((dish) => [dish.id, dish]));
     const uniqueIds = Array.from(
       new Set(parsed.dishIds.filter((id): id is string => typeof id === "string")),
-    ).slice(0, 10);
+    ).slice(0, 8);
 
     return uniqueIds.flatMap((dishId) => {
       const dish = byId.get(dishId);
@@ -106,7 +152,8 @@ Rules:
         portionBasis: "estimated" as const,
       }];
     });
-  } catch {
+  } catch (parseErr) {
+    console.warn("Failed to parse dish suggestion JSON:", parseErr, responseText);
     return [];
   }
 }
@@ -127,7 +174,7 @@ ${ocrText ? `\nOCR text extracted from the label:\n"""${ocrText}"""\n` : ""}
 Be as accurate as possible. If you can read values from the image, use those. If some values are unclear, make your best estimate based on the product type. If the image is completely unreadable or not a food label, return "Unknown Product" and 0 for all numerical values.`;
 
   const model = client.getGenerativeModel({ 
-    model: "gemini-2.0-flash",
+    model: GEMINI_MODEL,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -208,7 +255,7 @@ Identify all visible food items and estimate their nutritional values combined.
 Be realistic with estimates. Use visual anchors (like the size of a plate or utensils) to accurately estimate portion sizes. If the image is completely unreadable or not food, return "Unknown Meal" and 0 for numerical values.`;
 
   const model = client.getGenerativeModel({ 
-    model: "gemini-2.0-flash",
+    model: GEMINI_MODEL,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -284,14 +331,14 @@ export async function generateAISummary(
   userProfile?: UserProfile
 ): Promise<string> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = client.getGenerativeModel({ model: GEMINI_MODEL });
 
   const profileContext = userProfile
     ? `\nUser profile: ${userProfile.allergens.length > 0 ? `Allergens: ${userProfile.allergens.join(", ")}. ` : ""}${userProfile.dietPreferences.length > 0 ? `Diet: ${userProfile.dietPreferences.join(", ")}. ` : ""}Daily calorie goal: ${userProfile.dailyCalories}kcal. Protein goal: ${userProfile.proteinGoal}g. Sodium limit: ${userProfile.sodiumLimit}mg.`
     : "";
 
   const mlContext = product.mlPrediction 
-    ? `\nML Model Assessment: Predicted Grade ${product.mlPrediction.predictedGrade} (${Math.round(product.mlPrediction.confidence * 100)}% confidence). ${product.mlPrediction.riskFactors?.length ? `Risk factors: ${product.mlPrediction.riskFactors.map(rf => `${rf.factor} (${rf.severity})`).join(", ")}.` : ""}`
+    ? `\nML Model Assessment: Predicted Grade ${product.mlPrediction.predictedGrade} (${product.mlPrediction.confidence != null ? `${Math.round(product.mlPrediction.confidence * 100)}% confidence` : "heuristic"}). ${product.mlPrediction.riskFactors?.length ? `Risk factors: ${product.mlPrediction.riskFactors.map(rf => `${rf.factor} (${rf.severity})`).join(", ")}.` : ""}`
     : "";
 
   const prompt = `Write a concise 3-4 sentence health assessment for this food product. Be direct and actionable.
@@ -333,7 +380,7 @@ Rate concern levels:
 Be factual and balanced. Max 10 ingredients.`;
 
   const model = client.getGenerativeModel({ 
-    model: "gemini-2.0-flash",
+    model: GEMINI_MODEL,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -344,7 +391,7 @@ Be factual and balanced. Max 10 ingredients.`;
             name: { type: SchemaType.STRING },
             purpose: { type: SchemaType.STRING, description: "why it is used (1 sentence)" },
             healthNote: { type: SchemaType.STRING, description: "health consideration (1 sentence)" },
-            concern: { type: SchemaType.STRING, enum: ["none", "low", "moderate", "high"] }
+            concern: { type: SchemaType.STRING, format: "enum", enum: ["none", "low", "moderate", "high"] }
           },
           required: ["name", "purpose", "healthNote", "concern"]
         }
@@ -384,7 +431,7 @@ Search your knowledge of real products available in stores and online. Suggest 3
 Only suggest products that would be genuinely better. If the scanned product is already excellent (score 85+), say so and suggest equally good options.`;
 
   const model = client.getGenerativeModel({ 
-    model: "gemini-2.0-flash",
+    model: GEMINI_MODEL,
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -422,7 +469,7 @@ export async function chatAboutFood(
   userProfile?: UserProfile
 ): Promise<string> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = client.getGenerativeModel({ model: GEMINI_MODEL });
 
   const context = `You are NutriLens AI, a friendly nutrition assistant. You're discussing a food product with the user.
 
@@ -433,7 +480,7 @@ Nutrients: ${product.nutrients.map((n) => `${n.name}: ${n.value} (${n.rating})`)
 Allergens: ${product.allergens.join(", ") || "None"}
 Ingredients: ${product.ingredients}
 Analysis type: ${product.analysisMode === "food" ? "AI-estimated from food photo" : "Extracted from product label"}
-${product.mlPrediction ? `ML Prediction Context: Grade ${product.mlPrediction.predictedGrade} (${Math.round(product.mlPrediction.confidence * 100)}% confidence). Risk factors: ${product.mlPrediction.riskFactors?.map(rf => rf.factor).join(", ") || "None"}.` : ""}
+${product.mlPrediction ? `ML Prediction Context: Grade ${product.mlPrediction.predictedGrade} (${product.mlPrediction.confidence != null ? `${Math.round(product.mlPrediction.confidence * 100)}% confidence` : "heuristic"}). Risk factors: ${product.mlPrediction.riskFactors?.map(rf => rf.factor).join(", ") || "None"}.` : ""}
 ${userProfile ? `\nUser: ${userProfile.name}. Allergens: ${userProfile.allergens.join(", ") || "none"}. Diet: ${userProfile.dietPreferences.join(", ") || "no restrictions"}. Daily goals: ${userProfile.dailyCalories}kcal, ${userProfile.proteinGoal}g protein, ${userProfile.sodiumLimit}mg sodium limit.` : ""}
 
 Answer the user's question concisely (2-3 sentences). Be helpful, accurate, and practical. You have access to broad internet knowledge about nutrition, food science, and health.`;
@@ -458,7 +505,7 @@ export async function generateHealthyRecipe(
   userProfile?: UserProfile
 ): Promise<string> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = client.getGenerativeModel({ model: GEMINI_MODEL });
 
   const profileContext = userProfile
     ? `\nUser profile: ${userProfile.allergens.length > 0 ? `Allergens to avoid: ${userProfile.allergens.join(", ")}. ` : ""}${userProfile.dietPreferences.length > 0 ? `Diet: ${userProfile.dietPreferences.join(", ")}. ` : ""}Daily goals: ${userProfile.dailyCalories}kcal, ${userProfile.proteinGoal}g protein, ${userProfile.sodiumLimit}mg sodium limit.`
@@ -486,7 +533,7 @@ Keep it practical and easy to make.`;
 export async function validateApiKey(key: string): Promise<boolean> {
   try {
     const client = new GoogleGenerativeAI(key);
-    const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = client.getGenerativeModel({ model: GEMINI_MODEL });
     await model.generateContent("Say OK");
     return true;
   } catch {
