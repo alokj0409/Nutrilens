@@ -15,7 +15,7 @@ import { getApiKey } from "./storageService";
 
 export const GEMINI_MODEL =
   (import.meta.env.VITE_GEMINI_MODEL as string | undefined)?.trim() ||
-  "gemini-3.8-flash";
+  "gemini-1.5-flash";
 
 function getClient(): GoogleGenerativeAI {
   const key = getApiKey();
